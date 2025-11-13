@@ -38,6 +38,10 @@ const argv = await yargs(hideBin(process.argv))
     "populate--": true,
   })
   .options({
+    apiKey: {
+      describe: "API key for authenticating requests (uses X-API-Key header)",
+      type: "string",
+    },
     debug: {
       default: false,
       describe: "Enable debug logging",
@@ -62,6 +66,11 @@ const argv = await yargs(hideBin(process.argv))
       describe: "The port to listen on",
       type: "number",
     },
+    requestTimeout: {
+      default: 300000,
+      describe: "The timeout (in milliseconds) for requests to the MCP server (default: 5 minutes)",
+      type: "number",
+    },
     server: {
       choices: ["sse", "stream"],
       describe:
@@ -80,7 +89,8 @@ const argv = await yargs(hideBin(process.argv))
     },
     stateless: {
       default: false,
-      describe: "Enable stateless mode for HTTP streamable transport (no session management)",
+      describe:
+        "Enable stateless mode for HTTP streamable transport (no session management)",
       type: "boolean",
     },
     streamEndpoint: {
@@ -98,6 +108,7 @@ if (!argv.command) {
 }
 
 const finalCommand = argv.command;
+
 // If -- separator was used, args after -- are in argv["--"], otherwise use parsed args
 const finalArgs = (argv["--"] as string[]) || argv.args;
 
@@ -112,7 +123,8 @@ const connect = async (client: Client) => {
       }
     },
     shell: argv.shell,
-    stderr: "pipe",
+    // We want to passthrough stderr from the MCP server to enable better debugging
+    stderr: "inherit",
   });
 
   await client.connect(transport);
@@ -149,6 +161,7 @@ const proxy = async () => {
 
     proxyServer({
       client,
+      requestTimeout: argv.requestTimeout,
       server,
       serverCapabilities,
     });
@@ -157,6 +170,7 @@ const proxy = async () => {
   };
 
   const server = await startHTTPServer({
+    apiKey: argv.apiKey,
     createServer,
     eventStore: new InMemoryEventStore(),
     host: argv.host,
@@ -197,8 +211,8 @@ const createGracefulShutdown = ({
     }, timeout).unref();
   };
 
-  process.on("SIGTERM", gracefulShutdown);
-  process.on("SIGINT", gracefulShutdown);
+  process.once("SIGTERM", gracefulShutdown);
+  process.once("SIGINT", gracefulShutdown);
 
   return () => {
     server.close();
@@ -216,6 +230,7 @@ const main = async () => {
   } catch (error) {
     console.error("could not start the proxy", error);
 
+    // We give an extra second for logs to flush
     setTimeout(() => {
       process.exit(1);
     }, 1000);

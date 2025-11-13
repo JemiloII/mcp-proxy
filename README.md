@@ -3,7 +3,7 @@
 A TypeScript streamable HTTP and SSE proxy for [MCP](https://modelcontextprotocol.io/) servers that use `stdio` transport.
 
 > [!NOTE]
-> CORS is enabled by default.
+> CORS is enabled by default with configurable options. See [CORS Configuration](#cors-configuration) for details.
 
 > [!NOTE]
 > For a Python implementation, see [mcp-proxy](https://github.com/sparfenyuk/mcp-proxy).
@@ -35,8 +35,10 @@ options:
 - `--streamEndpoint`: Set the streamable HTTP endpoint path (default: `/mcp`). Overrides `--endpoint` if `server` is set to `stream`.
 - `--stateless`: Enable stateless mode for HTTP streamable transport (no session management). In this mode, each request creates a new server instance instead of maintaining persistent sessions.
 - `--port`: Specify the port to listen on (default: 8080)
+- `--requestTimeout`: Timeout in milliseconds for requests to the MCP server (default: 300000, which is 5 minutes)
 - `--debug`: Enable debug logging
 - `--shell`: Spawn the server via the user's shell
+- `--apiKey`: API key for authenticating requests (uses X-API-Key header)
 
 ### Passing arguments to the wrapped command
 
@@ -82,6 +84,210 @@ npx mcp-proxy --port 8080 --stateless --server stream tsx server.js
 - **Memory optimization**: When you want to minimize server memory usage
 - **Request isolation**: When you need complete independence between requests
 - **Simple deployments**: When you don't need to maintain connection state
+
+### API Key Authentication
+
+MCP Proxy supports optional API key authentication to secure your endpoints. When enabled, clients must provide a valid API key in the `X-API-Key` header to access the proxy.
+
+#### Enabling Authentication
+
+Authentication is disabled by default for backward compatibility. To enable it, provide an API key via:
+
+**Command-line:**
+```bash
+npx mcp-proxy --port 8080 --apiKey "your-secret-key" tsx server.js
+```
+
+**Environment variable:**
+```bash
+export MCP_PROXY_API_KEY="your-secret-key"
+npx mcp-proxy --port 8080 tsx server.js
+```
+
+#### Client Configuration
+
+Clients must include the API key in the `X-API-Key` header:
+
+```typescript
+// For streamable HTTP transport
+const transport = new StreamableHTTPClientTransport(
+  new URL('http://localhost:8080/mcp'),
+  {
+    headers: {
+      'X-API-Key': 'your-secret-key'
+    }
+  }
+);
+
+// For SSE transport
+const transport = new SSEClientTransport(
+  new URL('http://localhost:8080/sse'),
+  {
+    headers: {
+      'X-API-Key': 'your-secret-key'
+    }
+  }
+);
+```
+
+#### Exempt Endpoints
+
+The following endpoints do not require authentication:
+- `/ping` - Health check endpoint
+- `OPTIONS` requests - CORS preflight requests
+
+#### Security Notes
+
+- **Use HTTPS in production**: API keys should only be transmitted over secure connections
+- **Keep keys secure**: Never commit API keys to version control
+- **Generate strong keys**: Use cryptographically secure random strings for API keys
+- **Rotate keys regularly**: Change API keys periodically for better security
+
+### CORS Configuration
+
+MCP Proxy provides flexible CORS (Cross-Origin Resource Sharing) configuration to control how browsers can access your MCP server from different origins.
+
+#### Default Behavior
+
+By default, CORS is enabled with the following settings:
+- **Origin**: `*` (allow all origins)
+- **Methods**: `GET, POST, OPTIONS`
+- **Headers**: `Content-Type, Authorization, Accept, Mcp-Session-Id, Last-Event-Id`
+- **Credentials**: `true`
+- **Exposed Headers**: `Mcp-Session-Id`
+
+#### Basic Configuration
+
+```typescript
+import { startHTTPServer } from 'mcp-proxy';
+
+// Use default CORS settings (backward compatible)
+await startHTTPServer({
+  createServer: async () => { /* ... */ },
+  port: 3000,
+});
+
+// Explicitly enable default CORS
+await startHTTPServer({
+  createServer: async () => { /* ... */ },
+  port: 3000,
+  cors: true,
+});
+
+// Disable CORS completely
+await startHTTPServer({
+  createServer: async () => { /* ... */ },
+  port: 3000,
+  cors: false,
+});
+```
+
+#### Advanced CORS Configuration
+
+For more control over CORS behavior, you can provide a detailed configuration:
+
+```typescript
+import { startHTTPServer, CorsOptions } from 'mcp-proxy';
+
+const corsOptions: CorsOptions = {
+  // Allow specific origins
+  origin: ['https://app.example.com', 'https://admin.example.com'],
+  
+  // Or use a function for dynamic origin validation
+  origin: (origin: string) => origin.endsWith('.example.com'),
+  
+  // Specify allowed methods
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  
+  // Allow any headers (useful for browser clients with custom headers)
+  allowedHeaders: '*',
+  
+  // Or specify exact headers
+  allowedHeaders: [
+    'Content-Type',
+    'Authorization',
+    'Accept',
+    'Mcp-Session-Id',
+    'Last-Event-Id',
+    'X-Custom-Header',
+    'X-API-Key'
+  ],
+  
+  // Headers to expose to the client
+  exposedHeaders: ['Mcp-Session-Id', 'X-Total-Count'],
+  
+  // Allow credentials
+  credentials: true,
+  
+  // Cache preflight requests for 24 hours
+  maxAge: 86400,
+};
+
+await startHTTPServer({
+  createServer: async () => { /* ... */ },
+  port: 3000,
+  cors: corsOptions,
+});
+```
+
+#### Common Use Cases
+
+**Allow any custom headers (solves browser CORS issues):**
+```typescript
+await startHTTPServer({
+  createServer: async () => { /* ... */ },
+  port: 3000,
+  cors: {
+    allowedHeaders: '*', // Allows X-Custom-Header, X-API-Key, etc.
+  },
+});
+```
+
+**Restrict to specific domains:**
+```typescript
+await startHTTPServer({
+  createServer: async () => { /* ... */ },
+  port: 3000,
+  cors: {
+    origin: ['https://myapp.com', 'https://admin.myapp.com'],
+    allowedHeaders: '*',
+  },
+});
+```
+
+**Development-friendly settings:**
+```typescript
+await startHTTPServer({
+  createServer: async () => { /* ... */ },
+  port: 3000,
+  cors: {
+    origin: ['http://localhost:3000', 'http://localhost:5173'], // Common dev ports
+    allowedHeaders: '*',
+    credentials: true,
+  },
+});
+```
+
+#### Migration from Older Versions
+
+If you were using mcp-proxy 5.5.6 and want the same permissive behavior in 5.9.0+:
+
+```typescript
+// Old behavior (5.5.6) - automatic wildcard headers
+await startHTTPServer({
+  createServer: async () => { /* ... */ },
+  port: 3000,
+});
+
+// New equivalent (5.9.0+) - explicit wildcard headers
+await startHTTPServer({
+  createServer: async () => { /* ... */ },
+  port: 3000,
+  cors: {
+    allowedHeaders: '*',
+  },
+});
+```
 
 ### Node.js SDK
 
@@ -137,6 +343,8 @@ Options:
 - `sseEndpoint`: SSE endpoint path (default: "/sse", set to null to disable)
 - `streamEndpoint`: Streamable HTTP endpoint path (default: "/mcp", set to null to disable)
 - `stateless`: Enable stateless mode for HTTP streamable transport (default: false)
+- `apiKey`: API key for authenticating requests (optional)
+- `cors`: CORS configuration (default: enabled with permissive settings, see CORS Configuration section)
 - `onConnect`: Callback when a server connects (optional)
 - `onClose`: Callback when a server disconnects (optional)
 - `onUnhandledRequest`: Callback for unhandled HTTP requests (optional)
